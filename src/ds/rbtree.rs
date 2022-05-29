@@ -1,13 +1,13 @@
-use std::cell::{Ref, RefCell};
+use std::cell::{RefCell};
 use std::{fmt, ptr};
 use std::fmt::{Display, Formatter};
-use std::rc::{Rc, Weak};
+use std::rc::{Rc};
 
 type Link<K, V> = Rc<RefCell<Node<K, V>>>;
 type Tree<K, V> = Option<Link<K, V>>;
 
-type WeakLink<K, V> = Weak<RefCell<Node<K, V>>>;
-type WeakTree<K, V> = Option<WeakLink<K, V>>;
+// type WeakLink<K, V> = Weak<RefCell<Node<K, V>>>;
+// type WeakTree<K, V> = Option<WeakLink<K, V>>;
 
 type RBEntry<K, V> = Rc<Entry<K, V>>;
 
@@ -34,10 +34,6 @@ impl <K, V> Entry<K, V> {
             key,
             value: RefCell::new(Some(value)),
         })
-    }
-
-    fn borrow_value(&self) -> Ref<V> {
-        Ref::map(self.value.borrow(), |it| it.as_ref().unwrap())
     }
 }
 
@@ -112,14 +108,14 @@ type RBResult<T> = Result<T, RBError>;
 ///    leaves contain the same number of black nodes.
 pub struct RBTree<K, V> {
     root: Tree<K, V>,
-    length: usize,
+    size: usize,
 }
 
 impl<K, V> RBTree<K, V> where K: Ord + Clone + Display + ToString, V: Clone + Display + ToString {
     pub fn new() -> RBTree<K, V> {
         RBTree {
             root: None,
-            length: 0
+            size: 0
         }
     }
 
@@ -127,18 +123,23 @@ impl<K, V> RBTree<K, V> where K: Ord + Clone + Display + ToString, V: Clone + Di
     // if there the key exist, then update the value inplace accordingly
     pub fn insert(&mut self, key: K, value: V) {
         let node = Node::new(key, value).new_tree();
-        let result = self.insert_node(node);
+        let result = self._insert(node);
         if let Ok(_) = result {
-            self.length += 1;
+            self.size += 1;
         }
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
     }
 
     /// as retrieve value from local variable 'entry' violate the lifetime rule,
     /// so use unsafe
     pub fn get(&self, key: &K) -> Option<&V> {
-        let result = self.inner_get(&self.root, key);
+        let result = self._get(&self.root, key);
         match result {
-            Some(entry) => {
+            Some(_) => {
+                let entry = self.entry(&result);
                 unsafe {
                     Some((*entry.value.as_ptr()).as_ref().unwrap() )
                 }
@@ -147,13 +148,98 @@ impl<K, V> RBTree<K, V> where K: Ord + Clone + Display + ToString, V: Clone + Di
         }
     }
 
-    fn inner_get(&self, root: &Tree<K, V>, key: &K) -> Option<RBEntry<K, V>> {
+    pub fn maximum(&self) -> Option<(&K,&V)> {
+        let max_node = self._maximum(&self.root);
+        self._key_and_value(&max_node)
+    }
+
+    pub fn minimum(&self) -> Option<(&K,&V)> {
+        let min_node = self._minimum(&self.root);
+        self._key_and_value(&min_node)
+    }
+
+    pub fn successor(&self, key: &K) -> Option<(&K, &V)> {
+        let node = self._get(&self.root, &key);
+        match node {
+            Some(_) => {
+                let res = self._successor(&node);
+                match res {
+                    Some(_) => {
+                        self._key_and_value(&res)
+                    },
+                    _ => None
+                }
+            },
+            _ => None
+        }
+    }
+
+    fn _key_and_value(&self, x: &Tree<K, V>) -> Option<(&K, &V)> {
+        if x.is_some() {
+            let entry = self.entry(x);
+            unsafe {
+                Some((
+                    &(*Rc::as_ptr(&entry)).key,
+                    (*entry.value.as_ptr()).as_ref().unwrap(),
+                ))
+            }
+        } else {
+            None
+        }
+    }
+
+    fn _successor(&self, x: &Tree<K, V>) -> Tree<K, V> {
+        let r = self.right_child(x);
+        if r.is_some() {
+            return self._minimum(&r);
+        }
+        let mut x = x.clone() as Tree<K, V>;
+        let mut y = self.parent(&x);
+        let mut dir= self.which_child(&y, &x);
+        while y.is_some() && dir == RBOperation::Right {
+            x = y;
+            y = self.parent(&x);
+            dir = self.which_child(&y, &x);
+        }
+        y
+    }
+
+    fn _minimum(&self, root: &Tree<K, V>) -> Tree<K, V> {
+        match root {
+            None => {None}
+            Some(_) => {
+                let mut x = root.clone() as Tree<K, V>;
+                let mut r = self.left_child(&x);
+                while r.is_some() {
+                    x = r;
+                    r = self.left_child(&x);
+                }
+                x
+            }
+        }
+    }
+
+    fn _maximum(&self, root: &Tree<K, V>) -> Tree<K, V> {
+        match &root {
+            None => {None}
+            Some(_) => {
+                let mut x = root.clone() as Tree<K, V>;
+                let mut r = self.right_child(&x);
+                while r.is_some() {
+                    x = r;
+                    r = self.right_child(&x);
+                }
+                x
+            }
+        }
+    }
+
+    fn _get(&self, root: &Tree<K, V>, key: &K) -> Tree<K, V> {
         let mut x = root.clone() as Tree<K, V>;
         while x.is_some() {
             let entry = self.entry(&x);
             if &entry.key == key {
-
-                return Some(entry.clone());
+                return x.clone();
             } else {
                 let dir = self.which_operation_key(&entry.key, &key);
                 match dir {
@@ -166,7 +252,7 @@ impl<K, V> RBTree<K, V> where K: Ord + Clone + Display + ToString, V: Clone + Di
     }
 
     // insert z to the tree
-    fn insert_node(&mut self, node: Tree<K, V>) -> RBResult<Tree<K, V>> {
+    fn _insert(&mut self, node: Tree<K, V>) -> RBResult<Tree<K, V>> {
         let mut x = self.root.clone() as Tree<K, V>;
         let mut y= None as Tree<K, V>;
         let z = node;
@@ -201,11 +287,11 @@ impl<K, V> RBTree<K, V> where K: Ord + Clone + Display + ToString, V: Clone + Di
         } else {
             self.set_child(&y, z.clone(), self.which_operation(&self.entry(&y), &self.entry(&z)));
         }
-        self.insert_fixup(z.clone());
+        self._insert_fixup(z.clone());
         Ok(z.clone())
     }
 
-    fn insert_fixup(&mut self, z: Tree<K, V>) {
+    fn _insert_fixup(&mut self, z: Tree<K, V>) {
         let mut z = z;
         let mut p = self.parent(&z);
         while p.is_some() && self.color(&p) == Color::Red {
@@ -218,17 +304,19 @@ impl<K, V> RBTree<K, V> where K: Ord + Clone + Display + ToString, V: Clone + Di
                         self.set_color(&p, Color::Black);
                         self.set_color(&uncle, Color::Black);
                         self.set_color(&pp, Color::Red);
+                        z = pp;
+                        p = self.parent(&z);
                         continue;
                     } else {
                         let which_child = self.which_child(&p, &z);
                         if which_child == RBOperation::Right {
-                            self.left_rotate(&p);
+                            self._left_rotate(&p);
                             z = p.clone();
                             p = self.parent(&z);
                         }
                         self.set_color(&pp, Color::Red);
                         self.set_color(&p, Color::Black);
-                        self.right_rotate(&pp);
+                        self._right_rotate(&pp);
                     }
                 },
                 RBOperation::Right => {
@@ -237,17 +325,19 @@ impl<K, V> RBTree<K, V> where K: Ord + Clone + Display + ToString, V: Clone + Di
                         self.set_color(&p, Color::Black);
                         self.set_color(&uncle, Color::Black);
                         self.set_color(&pp, Color::Red);
+                        z = pp;
+                        p = self.parent(&z);
                         continue;
                     } else {
                         let which_child = self.which_child(&p, &z);
                         if which_child == RBOperation::Left {
-                            self.right_rotate(&p);
-                            z = p.clone();
+                            self._right_rotate(&p);
+                            z = p;
                             p = self.parent(&z);
                         }
                         self.set_color(&pp, Color::Red);
                         self.set_color(&p, Color::Black);
-                        self.left_rotate(&pp);
+                        self._left_rotate(&pp);
                     }
                 }
             }
@@ -255,8 +345,8 @@ impl<K, V> RBTree<K, V> where K: Ord + Clone + Display + ToString, V: Clone + Di
         self.set_color(&self.root, Color::Black);
     }
 
-    fn left_rotate(&mut self, x: &Tree<K, V>) {
-        let x = x.clone();
+    fn _left_rotate(&mut self, x: &Tree<K, V>) {
+        let x = x.clone() as Tree<K, V>;
         let y = self.right_child(&x);
         let parent = self.parent(&x);
 
@@ -290,7 +380,7 @@ impl<K, V> RBTree<K, V> where K: Ord + Clone + Display + ToString, V: Clone + Di
         self.set_parent(&x, y.clone());
     }
 
-    fn right_rotate(&mut self, x: &Tree<K, V>) {
+    fn _right_rotate(&mut self, x: &Tree<K, V>) {
         let x = x.clone();
         let y = self.left_child(&x);
         let parent = self.parent(&x);
@@ -441,17 +531,64 @@ impl<K, V> RBTree<K, V> where K: Ord + Clone + Display + ToString, V: Clone + Di
 fn test() {
     let mut tree = RBTree::<String, i32>::new();
     tree.insert("A".to_string(), 1);
-    tree.print_tree();
     tree.insert("B".to_string(), 2);
-    tree.print_tree();
     tree.insert("C".to_string(), 3);
+    tree.insert("D".to_string(), -1);
+    tree.insert("A".to_string(), -123);
+    tree.insert("E".to_string(), 5);
+    tree.insert("F".to_string(), 5);
+    tree.insert("G".to_string(), 5);
     tree.print_tree();
-    tree.insert("D".to_string(), 4);
+    tree.insert("H".to_string(), 5);
     tree.print_tree();
-    tree.insert("A".to_string(), 4);
+    tree.insert("I".to_string(), 5);
     tree.print_tree();
-    tree.insert("A".to_string(), 4);
+    tree.insert("J".to_string(), 5);
     tree.print_tree();
+    tree.insert("K".to_string(), 5);
+    tree.print_tree();
+    tree.insert("L".to_string(), 5);
+    tree.print_tree();
+    tree.insert("M".to_string(), 5);
+    tree.print_tree();
+    tree.insert("N".to_string(), 5);
+    tree.print_tree();
+    tree.insert("O".to_string(), 5);
+    tree.print_tree();
+    tree.insert("P".to_string(), 5);
+    tree.print_tree();
+    tree.insert("Q".to_string(), 5);
+    tree.print_tree();
+    tree.insert("R".to_string(), 5);
+    tree.print_tree();
+    tree.insert("S".to_string(), 5);
+    tree.print_tree();
+    tree.insert("T".to_string(), 5);
+    tree.print_tree();
+    tree.insert("U".to_string(), 5);
+    tree.print_tree();
+    tree.insert("V".to_string(), 5);
+    tree.print_tree();
+    tree.insert("W".to_string(), 5);
+    tree.print_tree();
+    tree.insert("X".to_string(), 5);
+    tree.print_tree();
+    tree.insert("Y".to_string(), 5);
+    tree.print_tree();
+    tree.insert("Z".to_string(), 5);
+    tree.print_tree();
+    tree.insert("AA".to_string(), 5);
+    tree.print_tree();
+    let x = tree.successor(&"D".to_string());
+    println!("{:?}", x);
+    let y = tree.get(&"A".to_string());
+    let maximum = tree.maximum();
+    let minimum = tree.minimum();
+    println!("{:?}, max: {:?}, min: {:?}", y, maximum, minimum);
+
+    let size = tree.size();
+    println!("size: {}", size);
+
 }
 
 
